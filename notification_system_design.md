@@ -255,201 +255,326 @@ Delete notification:
 curl -X DELETE http://localhost:5001/api/notifications/notification-id
 ```
 
-## Stage 4 — Logging Middleware
+## Stage 4 — Performance Optimization
+
+### Problem
+
+Database is overwhelmed by fetching all notifications on every page load for 50,000 students with 5,000,000 total notifications.
+
+### Performance Optimization Strategies
+
+#### Strategy 1: In-Memory Caching
+
+**Approach:** Cache user's recent notifications in memory (Redis or Node.js Map)
+
+**Tradeoffs:**
+- ✅ Pros: Extremely fast (microsecond latency), reduces DB queries by 80%+
+- ❌ Cons: Memory overhead, staleness issues, cache invalidation complexity
+
+**Implementation:**
+```javascript
+const notificationCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getNotificationsFromCache(userId) {
+  const cached = notificationCache.get(userId);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.data;
+  }
+  return null;
+}
+
+function cacheNotifications(userId, notifications) {
+  notificationCache.set(userId, {
+    data: notifications,
+    timestamp: Date.now(),
+  });
+}
+```
+
+#### Strategy 2: Pagination/Lazy Loading
+
+**Approach:** Load only 20-50 notifications per page, user scrolls for more
+
+**Tradeoffs:**
+- ✅ Pros: Reduces payload size, faster page load, better UX
+- ❌ Cons: User must scroll to see older notifications, multiple DB queries
+
+**Implementation:**
+```javascript
+GET /api/notifications?page=1&limit=20
+
+Response:
+{
+  "status": "success",
+  "page": 1,
+  "limit": 20,
+  "total": 342,
+  "hasMore": true,
+  "notifications": [...]
+}
+```
+
+#### Strategy 3: Database Indexing
+
+**Approach:** Add indexes on frequently queried columns
+
+**Tradeoffs:**
+- ✅ Pros: Query speed improves 10-50x, especially for WHERE/ORDER BY
+- ❌ Cons: Slower writes, increased storage
+
+**Indexes to add:**
+```sql
+CREATE INDEX idx_user_timestamp ON notifications(userId, timestamp DESC);
+CREATE INDEX idx_user_read ON notifications(userId, read);
+CREATE INDEX idx_notification_type ON notifications(notificationType);
+CREATE INDEX idx_created_date ON notifications(createdAt);
+```
+
+#### Strategy 4: Denormalization with Aggregation
+
+**Approach:** Store summary of unread count separately
+
+**Tradeoffs:**
+- ✅ Pros: Unread count queries execute in microseconds
+- ❌ Cons: Extra write overhead, data consistency issues
+
+**Implementation:**
+```sql
+CREATE TABLE user_notification_counts (
+  userId VARCHAR(50) PRIMARY KEY,
+  unreadCount INT DEFAULT 0,
+  totalCount INT DEFAULT 0,
+  lastFetch TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Update after marking notification as read:
+UPDATE user_notification_counts 
+SET unreadCount = unreadCount - 1 
+WHERE userId = ?;
+```
+
+#### Strategy 5: Message Queue / Background Processing
+
+**Approach:** Async queue to batch-fetch and pre-cache notifications
+
+**Tradeoffs:**
+- ✅ Pros: Reduces real-time DB load, enables pre-warming cache
+- ❌ Cons: Complexity, slight delay, infrastructure overhead
+
+### Recommended Combined Approach
+
+1. **Add indexes** on (userId, timestamp DESC) and (userId, read) — Low cost, high impact
+2. **Implement 5-minute TTL cache** with Redis for user's unread notifications
+3. **Use pagination** — Load 20 notifications initially, lazy-load more
+4. **Background refresh** — Refresh cache every 4 minutes via background job
+5. **Denormalize unread count** — Separate table for quick badge updates
+
+**Expected Result:** 
+- Page load time: 5s → 100ms (50x faster)
+- DB queries: 50,000/minute → 5,000/minute (90% reduction)
+- Memory usage: +2GB for Redis cache (acceptable for 50k users)
+
+## Stage 5 — Reliable Bulk Notification (notify_all)
 
 ### Implementation details
 
-The logging middleware is implemented in `logging_middleware/` using Node.js and provides structured logging with validation.
+The bulk notification system uses async queue processing for reliability and speed when notifying large numbers of users (50,000+).
 
-#### Running the middleware
+#### Queue-based architecture
 
-The middleware is used by importing it into any Express application:
+Implemented in `notification_app_be/queue.js`:
+
+- Maintains an async queue of notification tasks
+- Processes one task at a time to prevent system overload
+- Automatically retries failed tasks with exponential backoff
+- Non-blocking - returns immediately with promise array
+
+#### notify_all function
 
 ```javascript
-import loggingRouter from "./logging_middleware/routes.js";
-app.use("/api", loggingRouter);
+notifyAll(userIds, notificationData)
 ```
 
-#### Valid values
+**Parameters:**
+- `userIds` — Array of user IDs to notify (required, non-empty)
+- `notificationData` — Object with:
+  - `type` — Notification type (Placement, Event, Result, Announcement)
+  - `message` — Notification message text
+  - `priority` — Priority level (1-10, default 5)
+  - `metadata` — Additional data (optional)
 
-**Stack (required, lowercase only):**
-- `backend`
-- `frontend`
+**Returns:** Promise array of sent notification objects
 
-**Level (required, lowercase only):**
-- `debug`
-- `info`
-- `warn`
-- `error`
-- `fatal`
+#### Queue status monitoring
 
-**Package (required, lowercase only):**
-- Backend packages: `handler`, `repository`, `route`, `service`, `middleware`, `controller`, `cache`, `cron_job`, `db`, `domain`
-- Frontend packages: `api`, `component`, `hook`, `page`, `state`, `style`
-- Shared packages: `auth`, `config`, `utils`
+```javascript
+getQueueStatus()
+```
 
-**Message (required):**
-- String message describing the log entry
-
-#### Log entry structure
-
+Returns:
 ```json
 {
-  "id": "1234567890-abc123",
-  "timestamp": "2026-04-22T17:51:18.000Z",
-  "stack": "backend",
-  "level": "error",
-  "package": "handler",
-  "message": "received string, expected bool"
+  "queueLength": 1250,
+  "isProcessing": true,
+  "timestamp": "2026-04-22T17:51:18.000Z"
 }
 ```
 
-#### API endpoints
+#### Queue flushing
 
-**POST /logs**
-Create a new log entry.
-
-Request body:
-```json
-{
-  "stack": "backend",
-  "level": "error",
-  "package": "handler",
-  "message": "error description here"
-}
+```javascript
+flushQueue()
 ```
 
-Response:
+Waits for all queued tasks to complete before resolving.
+
+#### Example usage
+
+```javascript
+import { notifyAll, getQueueStatus, flushQueue } from "./notification_app_be/queue.js";
+
+const userIds = ["user-1", "user-2", "user-3", /* ...50000 users */];
+
+notifyAll(userIds, {
+  type: "Announcement",
+  message: "System maintenance scheduled",
+  priority: 8,
+  metadata: { startTime: "2026-04-25T00:00:00Z" },
+}).then(() => console.log("All notifications queued"));
+
+const status = getQueueStatus();
+console.log(`Queue status: ${status.queueLength} pending`);
+
+await flushQueue();
+console.log("All notifications delivered");
+```
+
+---
+
+## Stage 6 — Priority Inbox / Top-N Notifications
+
+### Implementation details
+
+The priority inbox provides intelligent sorting and filtering of notifications based on priority level and recency for fast retrieval of most important messages.
+
+#### PriorityInbox class
+
+Implemented in `notification_app_be/priority-inbox.js`:
+
+- Organizes notifications by user
+- Sorts by priority (descending) then timestamp (newest first)
+- Supports filtering by read/unread status
+- Returns top-N notifications efficiently
+
+#### Core methods
+
+**getTopNotifications(userId, n)**
+- Returns top N notifications for a user
+- Sorted by priority (high to low), then by recency
+- Default: n = 10
+
+**getTopUnreadNotifications(userId, n)**
+- Returns top N unread notifications
+- Same sorting as above
+- Useful for inbox displays
+
+**getNotificationStats(userId)**
+- Returns aggregate statistics:
+  - Total notification count
+  - Unread count
+  - Distribution by priority level
+
+**markAsRead(userId, notificationId)**
+- Marks notification as read
+- Returns true if successful
+
+**deleteNotification(userId, notificationId)**
+- Removes notification from inbox
+- Returns true if successful
+
+#### Sorting algorithm
+
+1. Primary sort: `priority` (descending, 10 highest)
+2. Secondary sort: `timestamp` (newest first, ISO 8601 format)
+
+This ensures critical messages appear first regardless of when older high-priority messages arrived.
+
+#### Response format
+
 ```json
 {
   "status": "success",
-  "log": {
-    "id": "1234567890-abc123",
-    "timestamp": "2026-04-22T17:51:18.000Z",
-    "stack": "backend",
-    "level": "error",
-    "package": "handler",
-    "message": "error description here"
-  }
-}
-```
-
-**GET /logs**
-Fetch all logs.
-
-Response:
-```json
-{
-  "status": "success",
-  "totalLogs": 42,
-  "logs": [...]
-}
-```
-
-**GET /logs/level/:level**
-Fetch logs by level (debug, info, warn, error, fatal).
-
-Example: `GET /logs/level/error`
-
-Response:
-```json
-{
-  "status": "success",
-  "level": "error",
-  "count": 5,
-  "logs": [...]
-}
-```
-
-**GET /logs/package/:pkg**
-Fetch logs by package name.
-
-Example: `GET /logs/package/handler`
-
-Response:
-```json
-{
-  "status": "success",
-  "package": "handler",
-  "count": 3,
-  "logs": [...]
-}
-```
-
-**DELETE /logs**
-Clear all logs.
-
-Response:
-```json
-{
-  "status": "success",
-  "message": "All logs cleared"
-}
-```
-
-#### File structure
-- `logging_middleware/logger.js` — Core logging functions and middleware
-- `logging_middleware/routes.js` — Express routes for logging API
-
-#### Validation errors
-
-Invalid requests return 400 status with error details:
-
-```json
-{
-  "status": "error",
-  "message": "Invalid log request",
-  "errors": [
-    "stack must be one of: backend, frontend",
-    "level must be one of: debug, info, warn, error, fatal"
+  "userId": "user-123",
+  "topN": 10,
+  "count": 8,
+  "notifications": [
+    {
+      "id": "notif-1",
+      "userId": "user-123",
+      "type": "Announcement",
+      "message": "Critical security update",
+      "priority": 9,
+      "timestamp": "2026-04-22T17:51:18.000Z",
+      "read": false,
+      "metadata": {}
+    },
+    {
+      "id": "notif-2",
+      "userId": "user-123",
+      "type": "Event",
+      "message": "Placement drive tomorrow",
+      "priority": 8,
+      "timestamp": "2026-04-22T16:30:00.000Z",
+      "read": false,
+      "metadata": {}
+    }
   ]
 }
 ```
 
-#### Storage
+#### Example usage
 
-Logs are persisted to `logging_middleware/logs.json` as a JSON array. The file is created automatically on first log entry.
+```javascript
+import { PriorityInbox } from "./notification_app_be/priority-inbox.js";
 
-#### Example curl requests
+const inbox = new PriorityInbox();
 
-Create a log:
-```bash
-curl -X POST http://localhost:5001/api/logs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "stack": "backend",
-    "level": "error",
-    "package": "handler",
-    "message": "received string, expected bool"
-  }'
+inbox.addNotification({
+  id: "notif-1",
+  userId: "user-123",
+  type: "Announcement",
+  message: "Critical alert",
+  priority: 9,
+  timestamp: new Date().toISOString(),
+  read: false,
+});
+
+const topNotifications = inbox.getTopNotifications("user-123", 5);
+console.log(`Top 5 notifications:`, topNotifications);
+
+const unreadTop = inbox.getTopUnreadNotifications("user-123", 10);
+console.log(`Top 10 unread:`, unreadTop);
+
+const stats = inbox.getNotificationStats("user-123");
+console.log(`Stats:`, stats);
 ```
 
-Get all logs:
-```bash
-curl http://localhost:5001/api/logs
-```
+#### Performance considerations
 
-Get error-level logs:
-```bash
-curl http://localhost:5001/api/logs/level/error
-```
+- O(n log n) sort on retrieval (n = total notifications for user)
+- O(1) add/mark/delete operations
+- For production with millions of notifications, use indexed database (PostgreSQL with priority + timestamp index)
 
-Get handler package logs:
-```bash
-curl http://localhost:5001/api/logs/package/handler
-```
-
-Clear all logs:
-```bash
-curl -X DELETE http://localhost:5001/api/logs
-```
+---
 
 ## Notes
 
 - Each stage is implemented independently
 - Stages 1 and 2 are design and schema documentation
-- Stage 3 is a working Node.js implementation with in-memory storage
-- Stage 4 is logging middleware with file-based persistence
-- For production, replace file storage with a logging service (ELK, Datadog, etc.)
-- Real-time WebSocket/SSE not yet implemented in Stage 3
+- Stage 3 is query optimization analysis
+- Stage 4 is performance optimization strategy (caching, indexing, pagination)
+- Stage 5 is notify_all() with async queuing implementation
+- Stage 6 is priority inbox with top-N filtering implementation
+- For production: Use Redis for caching (Stage 4), PostgreSQL for storage, message queue for bulk operations (Stage 5)
 
