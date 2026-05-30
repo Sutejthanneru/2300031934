@@ -255,10 +255,201 @@ Delete notification:
 curl -X DELETE http://localhost:5001/api/notifications/notification-id
 ```
 
+## Stage 4 — Logging Middleware
+
+### Implementation details
+
+The logging middleware is implemented in `logging_middleware/` using Node.js and provides structured logging with validation.
+
+#### Running the middleware
+
+The middleware is used by importing it into any Express application:
+
+```javascript
+import loggingRouter from "./logging_middleware/routes.js";
+app.use("/api", loggingRouter);
+```
+
+#### Valid values
+
+**Stack (required, lowercase only):**
+- `backend`
+- `frontend`
+
+**Level (required, lowercase only):**
+- `debug`
+- `info`
+- `warn`
+- `error`
+- `fatal`
+
+**Package (required, lowercase only):**
+- Backend packages: `handler`, `repository`, `route`, `service`, `middleware`, `controller`, `cache`, `cron_job`, `db`, `domain`
+- Frontend packages: `api`, `component`, `hook`, `page`, `state`, `style`
+- Shared packages: `auth`, `config`, `utils`
+
+**Message (required):**
+- String message describing the log entry
+
+#### Log entry structure
+
+```json
+{
+  "id": "1234567890-abc123",
+  "timestamp": "2026-04-22T17:51:18.000Z",
+  "stack": "backend",
+  "level": "error",
+  "package": "handler",
+  "message": "received string, expected bool"
+}
+```
+
+#### API endpoints
+
+**POST /logs**
+Create a new log entry.
+
+Request body:
+```json
+{
+  "stack": "backend",
+  "level": "error",
+  "package": "handler",
+  "message": "error description here"
+}
+```
+
+Response:
+```json
+{
+  "status": "success",
+  "log": {
+    "id": "1234567890-abc123",
+    "timestamp": "2026-04-22T17:51:18.000Z",
+    "stack": "backend",
+    "level": "error",
+    "package": "handler",
+    "message": "error description here"
+  }
+}
+```
+
+**GET /logs**
+Fetch all logs.
+
+Response:
+```json
+{
+  "status": "success",
+  "totalLogs": 42,
+  "logs": [...]
+}
+```
+
+**GET /logs/level/:level**
+Fetch logs by level (debug, info, warn, error, fatal).
+
+Example: `GET /logs/level/error`
+
+Response:
+```json
+{
+  "status": "success",
+  "level": "error",
+  "count": 5,
+  "logs": [...]
+}
+```
+
+**GET /logs/package/:pkg**
+Fetch logs by package name.
+
+Example: `GET /logs/package/handler`
+
+Response:
+```json
+{
+  "status": "success",
+  "package": "handler",
+  "count": 3,
+  "logs": [...]
+}
+```
+
+**DELETE /logs**
+Clear all logs.
+
+Response:
+```json
+{
+  "status": "success",
+  "message": "All logs cleared"
+}
+```
+
+#### File structure
+- `logging_middleware/logger.js` — Core logging functions and middleware
+- `logging_middleware/routes.js` — Express routes for logging API
+
+#### Validation errors
+
+Invalid requests return 400 status with error details:
+
+```json
+{
+  "status": "error",
+  "message": "Invalid log request",
+  "errors": [
+    "stack must be one of: backend, frontend",
+    "level must be one of: debug, info, warn, error, fatal"
+  ]
+}
+```
+
+#### Storage
+
+Logs are persisted to `logging_middleware/logs.json` as a JSON array. The file is created automatically on first log entry.
+
+#### Example curl requests
+
+Create a log:
+```bash
+curl -X POST http://localhost:5001/api/logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "stack": "backend",
+    "level": "error",
+    "package": "handler",
+    "message": "received string, expected bool"
+  }'
+```
+
+Get all logs:
+```bash
+curl http://localhost:5001/api/logs
+```
+
+Get error-level logs:
+```bash
+curl http://localhost:5001/api/logs/level/error
+```
+
+Get handler package logs:
+```bash
+curl http://localhost:5001/api/logs/package/handler
+```
+
+Clear all logs:
+```bash
+curl -X DELETE http://localhost:5001/api/logs
+```
+
 ## Notes
 
 - Each stage is implemented independently
 - Stages 1 and 2 are design and schema documentation
 - Stage 3 is a working Node.js implementation with in-memory storage
-- For production, replace Map storage with PostgreSQL
+- Stage 4 is logging middleware with file-based persistence
+- For production, replace file storage with a logging service (ELK, Datadog, etc.)
 - Real-time WebSocket/SSE not yet implemented in Stage 3
+
