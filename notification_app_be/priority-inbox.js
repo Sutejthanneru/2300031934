@@ -1,81 +1,96 @@
 export class PriorityInbox {
   constructor() {
     this.notifications = new Map();
+
+    this.typeWeights = {
+      Placement: 100,
+      Result: 80,
+      Event: 60,
+      Announcement: 40,
+    };
+  }
+
+  calculatePriority(notification) {
+    const baseWeight =
+      this.typeWeights[notification.type] || 10;
+
+    const ageInHours =
+      (Date.now() -
+        new Date(notification.timestamp).getTime()) /
+      (1000 * 60 * 60);
+
+    const recencyScore = Math.max(0, 50 - ageInHours);
+
+    return baseWeight + recencyScore;
   }
 
   addNotification(notification) {
     if (!this.notifications.has(notification.userId)) {
       this.notifications.set(notification.userId, []);
     }
-    this.notifications.get(notification.userId).push(notification);
+
+    notification.priorityScore =
+      this.calculatePriority(notification);
+
+    this.notifications
+      .get(notification.userId)
+      .push(notification);
   }
 
   getTopNotifications(userId, n = 10) {
-    const userNotifs = this.notifications.get(userId) || [];
+    const userNotifs =
+      this.notifications.get(userId) || [];
 
-    const sorted = userNotifs.sort((a, b) => {
-      const priorityDiff = b.priority - a.priority;
-      if (priorityDiff !== 0) return priorityDiff;
-
-      return new Date(b.timestamp) - new Date(a.timestamp);
-    });
-
-    return sorted.slice(0, n);
+    return [...userNotifs]
+      .sort(
+        (a, b) =>
+          b.priorityScore - a.priorityScore
+      )
+      .slice(0, n);
   }
 
   getTopUnreadNotifications(userId, n = 10) {
-    const userNotifs = this.notifications.get(userId) || [];
+    const userNotifs =
+      this.notifications.get(userId) || [];
 
-    const unread = userNotifs.filter((notif) => !notif.read);
-
-    const sorted = unread.sort((a, b) => {
-      const priorityDiff = b.priority - a.priority;
-      if (priorityDiff !== 0) return priorityDiff;
-
-      return new Date(b.timestamp) - new Date(a.timestamp);
-    });
-
-    return sorted.slice(0, n);
+    return [...userNotifs]
+      .filter((notif) => !notif.read)
+      .sort(
+        (a, b) =>
+          b.priorityScore - a.priorityScore
+      )
+      .slice(0, n);
   }
 
   markAsRead(userId, notificationId) {
-    const userNotifs = this.notifications.get(userId) || [];
-    const notif = userNotifs.find((n) => n.id === notificationId);
+    const userNotifs =
+      this.notifications.get(userId) || [];
+
+    const notif = userNotifs.find(
+      (n) => n.id === notificationId
+    );
 
     if (notif) {
       notif.read = true;
       return true;
     }
+
     return false;
   }
 
   deleteNotification(userId, notificationId) {
-    const userNotifs = this.notifications.get(userId) || [];
-    const index = userNotifs.findIndex((n) => n.id === notificationId);
+    const userNotifs =
+      this.notifications.get(userId) || [];
+
+    const index = userNotifs.findIndex(
+      (n) => n.id === notificationId
+    );
 
     if (index !== -1) {
       userNotifs.splice(index, 1);
       return true;
     }
+
     return false;
-  }
-
-  getNotificationStats(userId) {
-    const userNotifs = this.notifications.get(userId) || [];
-    const unreadCount = userNotifs.filter((n) => !n.read).length;
-    const byPriority = {};
-
-    userNotifs.forEach((notif) => {
-      if (!byPriority[notif.priority]) {
-        byPriority[notif.priority] = 0;
-      }
-      byPriority[notif.priority]++;
-    });
-
-    return {
-      totalNotifications: userNotifs.length,
-      unreadCount,
-      byPriority,
-    };
   }
 }

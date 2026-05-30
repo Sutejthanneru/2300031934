@@ -1,14 +1,35 @@
+import http from "http";
+import { Server } from "socket.io";
 import app from "./app.js";
 
 const PORT = process.env.NOTIFICATION_PORT || 5001;
 
-app.listen(PORT, () => {
-  console.log(`Notification backend is running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`API docs:`);
-  console.log(`  GET    http://localhost:${PORT}/api/notifications`);
-  console.log(`  GET    http://localhost:${PORT}/api/notifications/unread`);
-  console.log(`  POST   http://localhost:${PORT}/api/notifications`);
-  console.log(`  PATCH  http://localhost:${PORT}/api/notifications/:id/read`);
-  console.log(`  DELETE http://localhost:${PORT}/api/notifications/:id`);
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+  },
+});
+
+io.on("connection", (socket) => {
+  console.log("User connected:", socket.id);
+
+  socket.on("disconnect", () => {
+    console.log("User disconnected");
+  });
+});
+
+app.set("io", io);
+
+server.listen(PORT, () => {
+  console.log(`Notification backend running on port ${PORT}`);
+
+  console.log(`Health Check: http://localhost:${PORT}/health`);
+
+  console.log(`GET http://localhost:${PORT}/api/notifications`);
+
+  console.log(`GET http://localhost:${PORT}/api/notifications/top`);
+
+  console.log(`GET http://localhost:${PORT}/api/notifications/unread`);
 });

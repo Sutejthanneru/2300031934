@@ -1,88 +1,55 @@
-import { v4 as uuidv4 } from "uuid";
+// notification_app_be/server.js
 
-const notificationQueue = [];
-let isProcessing = false;
+import http from "http";
+import { Server } from "socket.io";
+import app from "./app.js";
 
-async function processQueue() {
-  if (isProcessing || notificationQueue.length === 0) {
-    return;
-  }
+const PORT =
+  process.env.NOTIFICATION_PORT ||
+  5001;
 
-  isProcessing = true;
+const server =
+  http.createServer(app);
 
-  while (notificationQueue.length > 0) {
-    const task = notificationQueue.shift();
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+  },
+});
 
-    try {
-      await task();
-      console.log(`[QUEUE] Task completed, ${notificationQueue.length} remaining`);
-    } catch (error) {
-      console.error(`[QUEUE] Task failed:`, error.message);
-      notificationQueue.push(task);
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-  }
+io.on("connection", (socket) => {
+  console.log(
+    "User connected:",
+    socket.id
+  );
 
-  isProcessing = false;
-}
-
-export async function notifyAll(userIds, notificationData) {
-  const { type, message, priority = 5, metadata = {} } = notificationData;
-
-  if (!Array.isArray(userIds) || userIds.length === 0) {
-    throw new Error("userIds must be a non-empty array");
-  }
-
-  if (!type || !message) {
-    throw new Error("type and message are required");
-  }
-
-  const sendPromises = userIds.map((userId) => {
-    return new Promise((resolve, reject) => {
-      const task = async () => {
-        try {
-          const notificationId = uuidv4();
-          const notification = {
-            id: notificationId,
-            userId,
-            type,
-            message,
-            priority,
-            metadata,
-            timestamp: new Date().toISOString(),
-            read: false,
-            deliveryStatus: "sent",
-          };
-
-          console.log(
-            `[NOTIFY] Sent to ${userId}: ${message.substring(0, 50)}...`
-          );
-
-          resolve(notification);
-        } catch (error) {
-          reject(error);
-        }
-      };
-
-      notificationQueue.push(task);
-      processQueue();
-    });
+  socket.on("disconnect", () => {
+    console.log(
+      "User disconnected"
+    );
   });
+});
 
-  return Promise.all(sendPromises);
-}
+app.set("io", io);
 
-export function getQueueStatus() {
-  return {
-    queueLength: notificationQueue.length,
-    isProcessing,
-    timestamp: new Date().toISOString(),
-  };
-}
+server.listen(PORT, () => {
+  console.log(
+    `Notification backend running on port ${PORT}`
+  );
 
-export async function flushQueue() {
-  while (notificationQueue.length > 0 || isProcessing) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  console.log("[QUEUE] All tasks completed");
-}
+  console.log(
+    `Health Check: http://localhost:${PORT}/health`
+  );
+
+  console.log(
+    `GET http://localhost:${PORT}/api/notifications`
+  );
+
+  console.log(
+    `GET http://localhost:${PORT}/api/notifications/top`
+  );
+
+  console.log(
+    `GET http://localhost:${PORT}/api/notifications/unread`
+  );
+});
